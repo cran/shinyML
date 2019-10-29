@@ -4,7 +4,6 @@
 #'
 #' @param data Time serie containing one or more input values and one output value. 
 #'    The time serie must be a data.frame or a data.table and must contain at least one time-based column on Date or POSIXct format.
-#' @param x Vector of numerical and categorical input variables used to train and test the model. Each element of x vector must correspond to a data column with either numerical or factor type.  
 #' 
 #' @param y the numerical output variable to forecast (must correpond to one data column)
 #' 
@@ -20,22 +19,19 @@
 #'\dontrun{
 #' library(shinyML)
 #' longley2 <- longley %>% mutate(Year = as.Date(as.character(Year),format = "%Y"))
-#' shiny_h2o(data =longley2,x = c("GNP_deflator","Unemployed" ,"Armed_Forces","Employed"),
-#'   y = "GNP",date_column = "Year",share_app = FALSE)
+#' shiny_h2o(data =longley2,y = "GNP",date_column = "Year",share_app = FALSE)
 #'}
 #' @import shiny shinydashboard dygraphs data.table ggplot2 shinycssloaders
-#' @importFrom dplyr %>% select mutate group_by summarise arrange rename
+#' @importFrom dplyr %>% select mutate group_by summarise arrange rename select_if
 #' @importFrom tidyr gather
 #' @importFrom DT renderDT DTOutput datatable
-#' @importFrom h2o h2o.init as.h2o h2o.deeplearning h2o.varimp h2o.predict h2o.gbm h2o.glm h2o.randomForest h2o.automl 
-#' @importFrom plotly plotlyOutput renderPlotly ggplotly
-#' @importFrom shinyWidgets materialSwitch sendSweetAlert knobInput
-#' @importFrom stats predict reorder
-#' 
-#' 
+#' @importFrom h2o h2o.init as.h2o h2o.deeplearning h2o.varimp h2o.predict h2o.gbm h2o.glm h2o.randomForest h2o.automl h2o.clusterStatus
+#' @importFrom plotly plotlyOutput renderPlotly ggplotly plot_ly layout
+#' @importFrom shinyWidgets materialSwitch switchInput sendSweetAlert knobInput
+#' @importFrom stats predict reorder cor
 #' @export
 
-shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL){
+shiny_h2o <- function(data = data,y,date_column, share_app = FALSE,port = NULL){
   
   
   # Convert input data must be a data table object
@@ -47,18 +43,36 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
   Sys.setenv(https_proxy_user="")
   h2o.init()
   h2o::h2o.no_progress()
+  cluster_status <- h2o.clusterStatus()
   
-  # Replace '.' by '_' in dataset column names ( if necessary )
-  x <- gsub("\\_",".",x)
   
-  # Test if date_column class correspond to Date or POSIXct
-  if (!(eval(parse(text = paste0("class(data$",date_column,")"))) %in% c("Date","POSIXct"))){
-    stop("date_column class must be Date or POSIXct")
+  # Replace '.' by '_' in data colnames
+  colnames(data) <- gsub("\\.","_",colnames(data))
+  
+  # Replace '.' by '_' in output variable
+  y <- gsub("\\.","_",y)
+  
+  # Test if y is in data colnames
+  if (!(y %in% colnames(data))){
+    stop("y must match one data input variable")
   }
   
   # Test if y class correspond to numeric
   if (!(eval(parse(text = paste0("class(data$",y,")"))) == "numeric")){
     stop("y column class must be numeric")
+  }
+  
+  # Assign x as data colnames excepted output variable name 
+  x <- setdiff(colnames(data),y)
+  
+  # Test if date_column is in data colnames
+  if (!(date_column %in% colnames(data))){
+    stop("date_column must match one data input variable")
+  }
+  
+  # Test if date_column class correspond to Date or POSIXct
+  if (!(eval(parse(text = paste0("class(data$",date_column,")"))) %in% c("Date","POSIXct"))){
+    stop("date_column class must be Date or POSIXct")
   }
   
   # Test if input data does not exceed one million rows
@@ -76,7 +90,15 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                          sidebarMenu(
                            menuItem(
                              materialSwitch(inputId = "bar_chart_mode",label = "Bar chart mode",status = "primary",value = TRUE)
-                           )
+                           ),
+                           br(),
+                           # Modify size of font awesome icons 
+                           tags$head( 
+                             tags$style(HTML(".fa { font-size: 40px; }"))
+                           ),
+                           valueBoxOutput("h2o_cluster_mem",width = 12),
+                           valueBoxOutput("h2o_cpu",width = 12)
+                           
                          )),
                        
                        dashboardBody(
@@ -84,13 +106,41 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                            column(width = 12,
                                   column(width = 8,
                                          fluidRow(
-                                           column(width = 12,box(dygraphOutput("input_curve", height = 120, width = 1100),width = 12)),
+                                           column(width = 12,
+                                                  tabBox(id = "explore_input_data", 
+                                                         tabPanel("Input data chart",
+                                                                  withSpinner(dygraphOutput("input_curve", height = 180, width = 1100))
+                                                         ),
+                                                         tabPanel("Variables Summary",
+                                                                  fluidRow( 
+                                                                    column(width = 6,
+                                                                           withSpinner(DTOutput("variables_class_input", height = 180, width = 500))),
+                                                                    column(width = 6,
+                                                                           div(align = "center",
+                                                                               radioButtons(inputId = "input_var_graph_type",label = "",choices = c("Boxplot","Histogram"),
+                                                                                            selected = "Boxplot",inline = T)),
+                                                                           withSpinner(plotlyOutput("variable_boxplot", height = 180, width = 500)))
+                                                                  )
+                                                         ),
+                                                         tabPanel("Explore dataset",
+                                                                  div(align = "center", column(width = 6,selectInput(inputId = "x_variable_input_curve",label = "X-axis variable",choices = colnames(data),selected = date_column))),
+                                                                  div(align = "center", column(width = 6,selectInput(inputId = "y_variable_input_curve",label = "Y-axis variable",choices = colnames(data),selected = y))),
+                                                                  
+                                                                  br(),
+                                                                  br(),
+                                                                  br(),
+                                                                  withSpinner(plotlyOutput("explore_dataset_chart",height = 250, width = 1100))
+                                                         ),
+                                                         
+                                                         tabPanel("Correlation matrix",withSpinner(plotlyOutput("correlation_matrix", height = 180, width = 1100))),
+                                                         width = 12)
+                                           ),
                                            column(width = 12,
                                                   tabBox(id = "results_models",
                                                          tabPanel("Result charts on test period",withSpinner(dygraphOutput("output_curve", height = 200, width = 1100))),
-                                                         tabPanel("Compare models performances",withSpinner(DTOutput("score_table"))),
+                                                         tabPanel("Compare models performances", withSpinner(DTOutput("score_table"))),
                                                          tabPanel("Feature importance",withSpinner(plotlyOutput("feature_importance"))),
-                                                         tabPanel("Table of results",withSpinner(DTOutput("table_of_results"))), width = 12
+                                                         tabPanel("Table of results", withSpinner(DTOutput("table_of_results"))), width = 12
                                                   )
                                            )
                                          )
@@ -142,7 +192,7 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                                       column(
                                         radioButtons(label = "Link",inputId = "glm_link",choices = c("identity","log"),selected = "identity"),width = 6),
                                       
-                                      materialSwitch(label = "Intercept term",inputId = "intercept_term_glm",status = "primary",value = TRUE),
+                                      switchInput(label = "Intercept term",inputId = "intercept_term_glm",value = TRUE,width = "auto"),
                                       sliderInput(label = "Lambda",inputId = "reg_param_glm",min = 0,max = 10,value = 0),
                                       sliderInput(label = "Alpha (0:Ridge <-> 1:Lasso)",inputId = "alpha_param_glm",min = 0,max = 1,value = 0.5),
                                       sliderInput(label = "Maximum iteraions",inputId = "max_iter_glm",min = 50,max = 300,value = 100),
@@ -161,7 +211,7 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                                       sliderInput(label = "Max depth",min = 1,max = 50, inputId = "max_depth_random_forest",value = 20),
                                       sliderInput(label = "Number of bins",min = 2,max = 100, inputId = "n_bins_random_forest",value = 20),
                                       actionButton("run_random_forest","Run random forest model",style = 'color:white; background-color:red; padding:4px; font-size:150%',
-                                                   icon = icon("users",lib = "font-awesome"))
+                                                   icon = icon("cogs",lib = "font-awesome"))
                                       
                                       ,width = 3
                                       
@@ -201,7 +251,7 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                                       sliderInput(label = "Sample rate",min = 0.1,max = 1, inputId = "sample_rate_gbm",value = 1),
                                       sliderInput(label = "Learn rate",min = 0.1,max = 1, inputId = "learn_rate_gbm",value = 0.1),
                                       actionButton("run_gradient_boosting","Run gradient boosting model",style = 'color:white; background-color:darkgreen; padding:4px; font-size:150%',
-                                                   icon = icon("users",lib = "font-awesome"))
+                                                   icon = icon("cogs",lib = "font-awesome"))
                                       
                                       ,width = 3
                                       
@@ -270,6 +320,8 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         v_auto_ml$type_model <- NA
         
         parameter$family_glm <- input$glm_family
+        parameter$glm_link <- input$glm_link
+        parameter$intercept_term_glm <- input$intercept_term_glm
         parameter$reg_param_glm <- input$reg_param_glm
         parameter$alpha_param_glm <- input$alpha_param_glm
         parameter$max_iter_glm <- input$max_iter_glm
@@ -291,8 +343,9 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         parameter$loss_neural_net <- input$loss_neural_net
         parameter$rate_neural_net <- input$rate_neural_net
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
-        
+        showTab(inputId = "results_models", target = "Table of results")        
         
       })
       
@@ -311,11 +364,16 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         v_glm$type_model <- "ml_generalized_linear_regression"
         
         parameter$family_glm <- input$glm_family
+        parameter$glm_link <- input$glm_link
+        parameter$intercept_term_glm <- input$intercept_term_glm
         parameter$reg_param_glm <- input$reg_param_glm
         parameter$alpha_param_glm <- input$alpha_param_glm
         parameter$max_iter_glm <- input$max_iter_glm
         
         hideTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Compare models performances")
+        showTab(inputId = "results_models", target = "Table of results")
+        
       })
       
       
@@ -339,7 +397,10 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         parameter$max_depth_random_forest <-  input$max_depth_random_forest
         parameter$n_bins_random_forest <- input$n_bins_random_forest
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Table of results")
+        
         
       })
       
@@ -364,7 +425,10 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         parameter$loss_neural_net <- input$loss_neural_net
         parameter$rate_neural_net <- input$rate_neural_net
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Table of results")
+        
       })
       
       # Make gradient boosting parameters correspond to cursors when user click on "Run gradient boosting model" button (and disable other models)
@@ -385,7 +449,10 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         parameter$max_depth_gbm <- input$max_depth_gbm
         parameter$learn_rate_gbm <- input$learn_rate_gbm
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Table of results")
+        
       })
       
       
@@ -405,6 +472,8 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         
         parameter$run_time_auto_ml <-  input$run_time_auto_ml
         hideTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Compare models performances")
+        showTab(inputId = "results_models", target = "Table of results")
         
         
       })
@@ -436,13 +505,66 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
       })
       
       
+      
+      # Define input data summary with class of each variable 
+      output$variables_class_input <- renderDT({
+        table_classes <- data.table()
+        
+        for (i in 1:ncol(data)){
+          
+          table_classes <- rbind(table_classes,
+                                 data.frame(Variable = colnames(data)[i],
+                                            Class = class(eval(parse(text = paste0("data$",colnames(data)[i]))))
+                                 )
+          )
+        }
+        
+        datatable(table_classes,options = list(pageLength =3,searching = FALSE,lengthChange = FALSE),selection = list(mode = "single",selected = c(1))
+        )
+      })
+      
+      # Define boxplot corresponding to  selected variable in variables_class_input 
+      output$variable_boxplot <- renderPlotly({
+        
+        column_name <- colnames(data)[input$variables_class_input_rows_selected]
+        
+        if (input$input_var_graph_type == "Histogram"){chart_type <- "histogram"}
+        else if (input$input_var_graph_type == "Boxplot"){chart_type <- "box"}
+        
+        plot_ly(x = eval(parse(text = paste0("data[,",column_name,"]"))),
+                type = chart_type,
+                name = column_name
+        )
+        
+        
+      })
+      
+      
+      # Define plotly chart to explore dependencies between variables 
+      output$explore_dataset_chart <- renderPlotly({
+        
+        
+        plot_ly(data = data, x = eval(parse(text = paste0("data$",input$x_variable_input_curve))), 
+                y = eval(parse(text = paste0("data$",input$y_variable_input_curve))),
+                type = "scatter",mode = "markers") %>% 
+          layout(xaxis = list(title = input$x_variable_input_curve),  yaxis = list(title = input$y_variable_input_curve))
+      })
+      
+      # Define input data chart and train/test periods splitting
+      output$correlation_matrix <- renderPlotly({
+        
+        data_correlation <- as.matrix(select_if(data, is.numeric))
+        plot_ly(x = colnames(data_correlation) , y = colnames(data_correlation), z =cor(data_correlation)  ,type = "heatmap", source = "heatplot")
+      })
+      
+      
       # Define output chart comparing predicted vs real values on test period for selected model(s)
       output$output_curve <- renderDygraph({
         
         
         output_dygraph <- dygraph(data = table_forecast()[['results']],main = "Prediction results on test period") %>%
           dyAxis("y",valueRange = c(0,1.5 * max(eval(parse(text =paste0("table_forecast()[['results']]$",y)))))) %>%
-          dyOptions(animatedZooms = TRUE)
+          dyOptions(animatedZooms = TRUE,fillGraph = T)
         
         # chart can be displayed with bar or line mode
         if (input$bar_chart_mode == TRUE){
@@ -450,8 +572,6 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         }
         
         output_dygraph %>% dyLegend(width = 800)
-        
-        
         
       })
       
@@ -490,7 +610,8 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                                y = y,
                                training_frame = data_h2o_train,
                                family = parameter$family_glm,
-                               intercept = input$intercept_term_glm,
+                               link = parameter$glm_link,
+                               intercept = parameter$intercept_term_glm,
                                lambda = parameter$reg_param_glm,
                                alpha = parameter$alpha_param_glm,
                                max_iterations = parameter$max_iter_glm,
@@ -613,7 +734,6 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
       # Define performance table visible on "Compare models performances" tab
       output$score_table <- renderDT({
         
-        
         performance_table <-  table_forecast()[['results']] %>%
           gather(key = Model,value = Predicted_value,-date_column,-y) %>%
           group_by(Model) %>%
@@ -633,12 +753,6 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
       # Define importance features table table visible on "Feature importance" tab
       output$feature_importance <- renderPlotly({
         
-        validate(
-          need(!is.na(v_neural$type_model)|!is.na(v_grad$type_model)|!is.na(v_glm$type_model)|!is.na(v_random$type_model)|!is.na(v_auto_ml$type_model),
-               
-               "Please run at least one model to see results"))
-        
-        
         if (nrow(table_forecast()[['table_importance']]) != 0){
           
           
@@ -655,7 +769,6 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
         }
         
       })
-      
       
       
       # Define results table visible on "Table of results" tab
@@ -682,6 +795,19 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
                           value= c(input$train_selector[1],input$test_selector[1]) )
       })
       
+      
+      # Hide tabs of results_models tabItem when no model has been runed 
+      observe({
+        
+        if (is.na(v_glm$type_model) & is.na(v_random$type_model) & is.na(v_neural$type_model) & is.na(v_grad$type_model) & is.na(v_auto_ml$type_model)){
+          
+          hideTab(inputId = "results_models", target = "Compare models performances")
+          hideTab(inputId = "results_models", target = "Feature importance")
+          hideTab(inputId = "results_models", target = "Table of results")
+          
+          
+        }
+      })
       
       # When "Run tuned models!" button is clicked, send messagebox once all models have been trained
       observe({
@@ -728,6 +854,26 @@ shiny_h2o <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL
             html = TRUE
           )
         }
+      })
+      
+      # Define Value Box concerning memory used by h2o cluster  
+      output$h2o_cluster_mem <- renderValueBox({
+        
+        valueBox(
+          paste(round(as.numeric(cluster_status$free_mem)/1024**3,2), "GB", sep = ""),
+          "H2O Cluster Total Memory", icon = icon("server"),
+          color = "maroon"
+        )
+      })
+      
+      # Define Value Box concerning number of cpu used by h2o cluster
+      output$h2o_cpu <- renderValueBox({
+        
+        valueBox(
+          cluster_status$num_cpus,
+          "Number of CPUs in Use", icon = icon("microchip"),
+          color = "light-blue"
+        )
       })
       
       

@@ -5,6 +5,10 @@ Compare H20 or Spark Supervised Regression Models Using Shiny App
 Badge](http://www.r-pkg.org/badges/version/shinyML)](https://CRAN.R-project.org/package=shinyML)
 [![CRAN Downloads
 Badge](https://cranlogs.r-pkg.org/badges/shinyML)](https://CRAN.R-project.org/package=shinyML)
+[![CRAN Downloads
+Badge](https://cranlogs.r-pkg.org/badges/grand-total/shinyML)](https://CRAN.R-project.org/package=shinyML)
+[![License: GPL
+v3](https://img.shields.io/badge/License-GPL%20v3-red.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Travis-CI Build
 Status](https://travis-ci.org/JeanBertinR/shinyML.svg?branch=master)](https://travis-ci.org/JeanBertinR/shinyML)
 [![AppVeyor build
@@ -45,21 +49,39 @@ This is a basic example which shows you how to run the app:
 ``` r
 library(shinyML)
 longley2 <- longley %>% mutate(Year = as.Date(as.character(Year),format = "%Y"))
-shiny_h2o(data =longley2,x = c("GNP_deflator","Unemployed" ,"Armed_Forces","Employed"),y = "GNP",date_column = "Year",share_app = TRUE,port = 3951)
+shiny_h2o(data =longley2,y = "GNP",date_column = "Year",share_app = FALSE)
 ```
+
+### Explore input dataset before running the models…
+
+Before running machine learning models, it can be useful to inspect the
+distribution of each variable and to have an insight of dependencies
+between explicative variables. Both`shiny_h2o` and `shiny_spark`
+functions allows to check classes of explicative variables, plot
+histograms of each distribution and show correlation matrix between all
+variables. This tabs can be used to determine if some variable are
+strongly correlated to another and eventually removed from the training
+phase.You can also plot variation of every variable as a function of
+another using the “Explore dataset” tab.
+
+<p align="center">
+
+<img src="vignettes/explore_data.gif">
+
+</p>
 
 ### Test different machine learning techiques and hyper-parameters configurations with just a few clicks
 
-First step consist in choosing separating train and test period from
-your dataset: this can be done in one second using slider button on the
-right of your shinyML app. You can also remove variables from your
-initial selection directly from app just simply using “Input variable”
-textbox. You are then free to select hyper-parameters configuration for
-your favorite machine learning model.  
+To test machine learning models on `shinyML` package, the first step
+consist in choosing separating train and test period from your dataset:
+this can be done in one second using slider button on the right of your
+shinyML app. You can also remove variables from your initial selection
+directly from app just simply using “Input variable” textbox. You are
+then free to select hyper-parameters configuration for your favorite
+machine learning model.  
 Note that hidden layers of deep learning technique can be set inside the
 corresponding text box: the default c(200,200) configuration corresponds
-to a two hiden-layers neural network, with neurons for each
-layers.
+to a two hiden-layers neural network, with neurons for each layers.
 
 <p align="center">
 
@@ -82,8 +104,7 @@ parameters and click then to “Run tuned models \!”
 
 You will see a validation message box once all models have been trained:
 at that point, you can have an overview of your results comparing
-variables importances and error metrics like MAPE or
-RMSE.
+variables importances and error metrics like MAPE or RMSE.
 
 ### Run autoML alogrithm to find automatically configure the best machine learning regression model associated to your dataset
 

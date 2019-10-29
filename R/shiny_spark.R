@@ -4,7 +4,6 @@
 #'
 #' @param data Time serie containing one or more input values and one output value. 
 #'    The time serie must be a data.frame or a data.table and must contain at least one time-based column on Date or Posixct format.
-#' @param x Vector of numerical and categorical input variables used to train and test the model. Each element of x vector must correspond to a data column with either numerical or factor type.  
 #' 
 #' @param y the numerical output variable to forecast (must correpond to one data column)
 #' 
@@ -20,34 +19,49 @@
 #'\dontrun{
 #' library(shinyML)
 #' longley2 <- longley %>% mutate(Year = as.Date(as.character(Year),format = "%Y"))
-#' shiny_spark(data =longley2,x = c("GNP_deflator","Unemployed" ,"Armed_Forces","Employed"),
-#'   y = "GNP",date_column = "Year",share_app = FALSE)
+#' shiny_spark(data =longley2,y = "GNP",date_column = "Year",share_app = FALSE)
 #'}
 #' @import shiny shinydashboard dygraphs data.table ggplot2 sparklyr shinycssloaders
 #' @importFrom dplyr %>% select mutate group_by summarise arrange rename
 #' @importFrom tidyr gather
 #' @importFrom DT renderDT DTOutput datatable
-#' @importFrom plotly plotlyOutput renderPlotly ggplotly
-#' @importFrom shinyWidgets materialSwitch sendSweetAlert
-#' @importFrom stats predict reorder
+#' @importFrom plotly plotlyOutput renderPlotly ggplotly plot_ly layout
+#' @importFrom shinyWidgets materialSwitch switchInput sendSweetAlert
+#' @importFrom stats predict reorder cor
 #' @export
 
-shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NULL ){
+shiny_spark <- function(data = data,y,date_column, share_app = FALSE,port = NULL ){
   
   # Convert dataset to data.table format
   data <- data.table(data)
   
-  # Replace '.' by '_' in dataset column names ( if necessary )
-  x <- gsub("\\.","_",x)
+  # Replace '.' by '_' in data colnames
+  colnames(data) <- gsub("\\.","_",colnames(data))
+  
+  # Replace '.' by '_' in output variable
+  y <- gsub("\\.","_",y)
+  
+  # Test if y is in data colnames
+  if (!(y %in% colnames(data))){
+    stop("y must match one data input variable")
+  }
+  
+  # Test if y class correspond to numeric
+  if (!(eval(parse(text = paste0("class(data$",y,")"))) == "numeric")){
+    stop("y column class must be numeric")
+  }
+  
+  # Assign x as data colnames excepted output variable name 
+  x <- setdiff(colnames(data),y)
+  
+  # Test if date_column is in data colnames
+  if (!(date_column %in% colnames(data))){
+    stop("date_column must match one data input variable")
+  }
   
   # Test if date_column class correspond to Date or POSIXct
   if (!(eval(parse(text = paste0("class(data$",date_column,")"))) %in% c("Date","POSIXct"))){
     stop("date_column class must be Date or POSIXct")
-  }
-
-  # Test if y class correspond to numeric
-  if (!(eval(parse(text = paste0("class(data$",y,")"))) == "numeric")){
-    stop("y column class must be numeric")
   }
   
   # Test if input data does not exceed one million rows
@@ -62,6 +76,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
   
   # Connect to local Spark cluster
   sc <- spark_connect(master = "local")
+  config_spark<- spark_session_config(sc)
   
   # Define shiny app 
   app <- shinyApp(
@@ -71,9 +86,17 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
       dashboardHeader(title = "Spark"),
       dashboardSidebar( 
         sidebarMenu(
-          menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard"),
-                   materialSwitch(inputId = "bar_chart_mode",label = "Bar chart mode",status = "primary",value = TRUE)
-          )
+          menuItem(
+            materialSwitch(inputId = "bar_chart_mode",label = "Bar chart mode",status = "primary",value = TRUE)
+          ),
+          br(),
+          # Modify size of font awesome icons 
+          tags$head( 
+            tags$style(HTML(".fa { font-size: 40px; }"))
+          ),
+          valueBoxOutput("spark_cluster_mem",width = 12),
+          valueBoxOutput("spark_cpu",width = 12)
+          
         )),
       
       dashboardBody(
@@ -81,9 +104,31 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
           column(width = 12,
                  column(width = 8,
                         fluidRow(
-                          column(width = 12,box(
-                            dygraphOutput("input_curve", height = 120, width = 1100),width = 12
-                          )
+                          column(width = 12,
+                                 tabBox(id = "explore_input_data", 
+                                        tabPanel("Input data chart",withSpinner(dygraphOutput("input_curve", height = 180, width = 1100))),
+                                        tabPanel("Variables Summary",
+                                                 fluidRow( 
+                                                   column(width = 6,
+                                                          withSpinner(DTOutput("variables_class_input", height = 180, width = 500))),
+                                                   column(width = 6,
+                                                          div(align = "center",
+                                                              radioButtons(inputId = "input_var_graph_type",label = "",choices = c("Boxplot","Histogram"),
+                                                                           selected = "Boxplot",inline = T)),
+                                                          withSpinner(plotlyOutput("variable_boxplot", height = 180, width = 500)))
+                                                 )
+                                        ),
+                                        tabPanel("Explore dataset",
+                                                 div(align = "center", column(width = 6,selectInput(inputId = "x_variable_input_curve",label = "X-axis variable",choices = colnames(data),selected = date_column))),
+                                                 div(align = "center", column(width = 6,selectInput(inputId = "y_variable_input_curve",label = "Y-axis variable",choices = colnames(data),selected = y))),
+                                                 
+                                                 br(),
+                                                 br(),
+                                                 br(),
+                                                 withSpinner(plotlyOutput("explore_dataset_chart",height = 250, width = 1100))
+                                        ),
+                                        tabPanel("Correlation matrix",withSpinner(plotlyOutput("correlation_matrix", height = 180, width = 1100))),
+                                        width = 12)
                           ),
                           column(width = 12,tabBox(id = "results_models",
                                                    tabPanel("Result charts on test period",withSpinner(dygraphOutput("output_curve",height = 200,width = 1100))),
@@ -128,7 +173,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
                      column(
                        radioButtons(label = "Link",inputId = "glm_link",choices = c("identity","log"),selected = "identity"),width = 6),
                      
-                     materialSwitch(label = "Intercept term",inputId = "intercept_term_glm",status = "primary",value = TRUE),
+                     switchInput(label = "Intercept term",inputId = "intercept_term_glm",value = TRUE,width = "auto"),
                      sliderInput(label = "Regularization parameter (lambda)",inputId = "reg_param_glm",min = 0,max = 10,value = 0),
                      sliderInput(label = "Maximum iteraions",inputId = "max_iter_glm",min = 50,max = 300,value = 100),
                      actionButton("run_glm","Run generalized linear regression",style = 'color:white; background-color:orange; padding:4px; font-size:150%',
@@ -155,7 +200,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
                      sliderInput(label = "Subsampling rate",min = 0.1,max = 1, inputId = "subsampling_rate_random_forest",value = 1),
                      sliderInput(label = "Max depth",min = 1,max = 30, inputId = "max_depth_random_forest",value = 20),
                      actionButton("run_random_forest","Run random forest model",style = 'color:white; background-color:darkblue; padding:4px; font-size:150%',
-                                  icon = icon("users",lib = "font-awesome"))
+                                  icon = icon("cogs",lib = "font-awesome"))
                      
                      ,width = 3),
                    
@@ -169,7 +214,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
                      sliderInput(label = "Max depth",min = 1,max = 30, inputId = "max_depth_gbm",value = 20),
                      
                      actionButton("run_gradient_boosting","Run gradient boosting model",style = 'color:white; background-color:darkgreen; padding:4px; font-size:150%',
-                                  icon = icon("users",lib = "font-awesome"))
+                                  icon = icon("cogs",lib = "font-awesome"))
                      
                      ,width = 3)
                    
@@ -241,7 +286,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         
         parameter$family_glm <- input$glm_family
         parameter$link_glm <- input$glm_link
-        parameter$intercept_glm <- input$intercept_term_glm
+        parameter$intercept_term_glm <- input$intercept_term_glm
         parameter$reg_param_glm <- input$reg_param_glm
         parameter$max_iter_glm <- input$max_iter_glm
         
@@ -250,6 +295,8 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         parameter$min_instance_decision_tree <- input$min_instance_decision_tree
         
         showTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Compare models performances")
+        showTab(inputId = "results_models", target = "Table of results")
         
         
       })
@@ -261,12 +308,10 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         test_1$date <- input$test_selector[1]
         test_2$date <- input$test_selector[2]
         model$train_variables <- input$input_variables
+        
         parameter$family_glm <- input$glm_family
         parameter$link_glm <- input$glm_link
-        parameter$intercept_glm <- input$intercept_term_glm
-        
-        
-        
+        parameter$intercept_term_glm <- input$intercept_term_glm
         parameter$reg_param_glm <- input$reg_param_glm
         parameter$max_iter_glm <- input$max_iter_glm
         
@@ -276,9 +321,12 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         v_decision_tree$type_model <- NA
         
         hideTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Compare models performances")
+        showTab(inputId = "results_models", target = "Table of results")  
+        
       })
       
-
+      
       
       # Make decision tree parameters correspond to cursors when user click on "Run decision tree" button (and disable other models)
       observeEvent(input$run_decision_tree,{
@@ -296,7 +344,9 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         v_grad$type_model <- NA
         v_random$type_model <- NA
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
+        showTab(inputId = "results_models", target = "Table of results")  
         
       })
       
@@ -315,8 +365,9 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         v_glm$type_model <- NA
         v_decision_tree$type_model <- NA
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
-        
+        showTab(inputId = "results_models", target = "Table of results")          
       })
       
       # Make gradient boosting parameters correspond to cursors when user click on "Run gradient boosting model" button (and disable other models)
@@ -335,11 +386,12 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         v_glm$type_model <- NA
         v_decision_tree$type_model <- NA
         
+        showTab(inputId = "results_models", target = "Compare models performances")
         showTab(inputId = "results_models", target = "Feature importance")
-        
+        showTab(inputId = "results_models", target = "Table of results")          
       })
       
-
+      
       
       # Define input data chart and train/test periods splitting
       output$input_curve <- renderDygraph({
@@ -368,12 +420,65 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
       })
       
       
+      
+      # Define input data summary with class of each variable 
+      output$variables_class_input <- renderDT({
+        table_classes <- data.table()
+        
+        for (i in 1:ncol(data)){
+          
+          table_classes <- rbind(table_classes,
+                                 data.frame(Variable = colnames(data)[i],
+                                            Class = class(eval(parse(text = paste0("data$",colnames(data)[i]))))
+                                 )
+          )
+        }
+        
+        datatable(table_classes,options = list(pageLength =3,searching = FALSE,lengthChange = FALSE),selection = list(mode = "single",selected = c(1))
+        )
+      })
+      
+      # Define boxplot corresponding to  selected variable in variables_class_input 
+      output$variable_boxplot <- renderPlotly({
+        
+        column_name <- colnames(data)[input$variables_class_input_rows_selected]
+        
+        if (input$input_var_graph_type == "Histogram"){chart_type <- "histogram"}
+        else if (input$input_var_graph_type == "Boxplot"){chart_type <- "box"}
+        
+        plot_ly(x = eval(parse(text = paste0("data[,",column_name,"]"))),
+                type = chart_type,
+                name = column_name
+        )
+        
+        
+      })
+      
+      # Define plotly chart to explore dependencies between variables 
+      output$explore_dataset_chart <- renderPlotly({
+        
+        
+        plot_ly(data = data, x = eval(parse(text = paste0("data$",input$x_variable_input_curve))), 
+                y = eval(parse(text = paste0("data$",input$y_variable_input_curve))),
+                type = "scatter",mode = "markers") %>% 
+          layout(xaxis = list(title = input$x_variable_input_curve),  yaxis = list(title = input$y_variable_input_curve))
+      })
+      
+      
+      # Define input data chart and train/test periods splitting
+      output$correlation_matrix <- renderPlotly({
+        
+        data_correlation <- as.matrix(select_if(data, is.numeric))
+        plot_ly(x = colnames(data_correlation) , y = colnames(data_correlation), z =cor(data_correlation)  ,type = "heatmap", source = "heatplot")
+      })
+      
+      
       # Define output chart comparing predicted vs real values on test period for selected model(s)
       output$output_curve <- renderDygraph({
         
         output_dygraph <- dygraph(data = table_forecast()[['results']],main = "Prediction results on test period") %>% 
           dyAxis("y",valueRange = c(0,1.5 * max(eval(parse(text =paste0("table_forecast()[['results']]$",y)))))) %>% 
-          dyOptions(animatedZooms = TRUE)
+          dyOptions(animatedZooms = TRUE,fillGraph = T)
         
         
         if (input$bar_chart_mode == TRUE){
@@ -417,7 +522,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
             eval(parse(text = paste0("fit <- data_spark_train %>% ml_generalized_linear_regression(", y ," ~ " ,var_input_list ,
                                      ",family  = ", parameter$family_glm,
                                      ",link =",parameter$link_glm,
-                                     ",fit_intercept =",input$intercept_term_glm,
+                                     ",fit_intercept =",parameter$intercept_term_glm,
                                      ",reg_param =",parameter$reg_param_glm,
                                      ",max_iter =",parameter$max_iter_glm,
                                      ")")))
@@ -499,7 +604,6 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
           
         }
         
-        
         table_training_time <- rbind(time_gbm,time_random_forest,time_glm,time_decision_tree)
         table_importance <- rbind(importance_gbm,importance_random_forest,importance_decision_tree) %>% as.data.table()
         
@@ -507,8 +611,6 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         list(traning_time = table_training_time, table_importance = table_importance, results = table_results)
         
       })
-      
-      
       
       # Define performance table visible on "Compare models performances" tab
       output$score_table <- renderDT({
@@ -530,21 +632,8 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         
       })
       
-      
-      
-      
-
-      
-      
       # Define importance features table table visible on "Feature importance" tab
       output$feature_importance <- renderPlotly({
-        
-        
-        validate(
-          need(!is.na(v_decision_tree$type_model)|!is.na(v_grad$type_model)|!is.na(v_glm$type_model)|!is.na(v_random$type_model),
-               
-               "Please run at least one model to see results"))
-        
         
         
         if (nrow(table_forecast()[['table_importance']]) != 0){
@@ -572,9 +661,9 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
         
         
       },server = FALSE )
-  
       
-
+      
+      
       # Synchronize train and test cursors
       observeEvent(input$train_selector,{
         updateSliderInput(session,'test_selector',
@@ -587,21 +676,64 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
       })
       
       
-      # When "Run tuned models!" button is clicked, send messagebox once all models have been trained
-      observeEvent(input$train_all,{
+      # Hide tabs of results_models tabItem when no model has been runed
+      observe({
         
-        sendSweetAlert(
-          session = session,
-          title = "The four machine learning algorithms are currently running !",
-          text = "Click ok to see results",
-          type = "success"
-        )
+        if (is.na(v_glm$type_model) & is.na(v_decision_tree$type_model) & is.na(v_random$type_model) & is.na(v_grad$type_model)){
+          
+          hideTab(inputId = "results_models", target = "Compare models performances")
+          hideTab(inputId = "results_models", target = "Feature importance")
+          hideTab(inputId = "results_models", target = "Table of results")
+          
+          
+        }
       })
       
       
+      # When "Run tuned models!" button is clicked, send messagebox once all models have been trained
+      observe({
+        
+        if ("Generalized linear regression" %in% colnames(table_forecast()[['results']]) &
+            "Decision tree" %in% colnames(table_forecast()[['results']]) &
+            "Random forest" %in% colnames(table_forecast()[['results']]) &
+            "Gradient boosted trees" %in% colnames(table_forecast()[['results']])
+        ){
+          
+          
+          sendSweetAlert(
+            session = session,
+            title = "The four machine learning models have been trained !",
+            text = "Click ok to see results",
+            type = "success"
+            
+            
+          )
+        }
+      })
+      
+      # Define Value Box concerning memory used by h2o cluster  
+      output$spark_cluster_mem <- renderValueBox({
+        
+        valueBox(
+          gsub("g"," GB",config_spark$spark.driver.memory),
+          "Spark Cluster Total Memory", icon = icon("server"),
+          color = "maroon"
+        )
+      })
+      
+      # Define Value Box concerning number of cpu used by h2o cluster
+      output$spark_cpu <- renderValueBox({
+        
+        valueBox(
+          config_spark$spark.sql.shuffle.partitions,
+          "Number of CPUs in Use", icon = icon("microchip"),
+          color = "light-blue"
+        )
+      })
       
     }
   )
+  
   
   # Allow to share the dashboard on local LAN
   if (share_app == TRUE){
@@ -609,7 +741,7 @@ shiny_spark <- function(data = data,x,y,date_column, share_app = FALSE,port = NU
     if(is.null(port)){stop("Please choose a port to share dashboard")}
     else if (nchar(port) != 4) {stop("Incorrect format of port")}
     else if (nchar(port) == 4){
-      ip_adress <- gsub(".*? ([[:digit:]])", "\\1", system("ipconfig", intern=TRUE)[grep("IPv4", system("ipconfig", intern=TRUE))]) 
+      ip_adress <- gsub(".*? ([[:digit:]])", "\\1", system("ipconfig", intern=TRUE)[grep("IPv4", system("ipconfig", intern=TRUE))])[2]
       message("Forecast dashboard shared on LAN at ",ip_adress,":",port)
       runApp(app,host = "0.0.0.0",port = port,quiet = TRUE)
     }
