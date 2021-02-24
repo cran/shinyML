@@ -30,7 +30,7 @@
 #' @importFrom tidyr gather everything
 #' @importFrom DT renderDT DTOutput datatable
 #' @importFrom h2o h2o.init as.h2o h2o.deeplearning h2o.varimp h2o.predict h2o.gbm h2o.glm h2o.randomForest h2o.automl h2o.clusterStatus
-#' @importFrom plotly plotlyOutput renderPlotly ggplotly plot_ly layout add_trace
+#' @importFrom plotly plotlyOutput renderPlotly ggplotly plot_ly layout add_trace hide_legend
 #' @importFrom shinyWidgets materialSwitch switchInput sendSweetAlert knobInput awesomeCheckbox actionBttn prettyCheckboxGroup
 #' @importFrom shinyjs useShinyjs hideElement
 #' @importFrom stats predict reorder cor acf
@@ -43,6 +43,9 @@
 shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALSE,port = NULL){
   
   ## ---------------------------------------------------------------------------- INITIALISATION  -----------------------------------
+  
+  # Ensure reproducibility
+  set.seed(123)
   
   # Return an error if framework is not h2o or spark 
   if(!(framework %in% c("h2o","spark"))){stop("framework must be selected between h2o or spark")}
@@ -116,6 +119,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
   importance <- NULL
   fit <- NULL
   prediction <- NULL
+  `..density..` <- NULL
   
   ## ---------------------------------------------------------------------------- UI  -----------------------------------
   
@@ -186,7 +190,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
           HTML("This section allows to plot variation of each variable as a function of another, to check classes of explicative variables, to plot histograms of each distribution and show correlation matrix between all variables.<br><br> 
           Please note that this section can be used to determine if some variable are strongly correlated to another and eventually removed from the training phase.")
         )
-        ),
+    ),
     br(),
     argonRow(
       argonColumn(width = 9,
@@ -221,7 +225,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                                                    ),
                                                    argonColumn(width = 8,
                                                                div(align = "center",
-                                                                   radioButtons(inputId = "input_var_graph_type",label = "",choices = c("Boxplot","Histogram","Autocorrelation"),selected = "Boxplot",inline = T)
+                                                                   radioButtons(inputId = "input_var_graph_type",label = "",choices = c("Histogram","Boxplot","Autocorrelation"),selected = "Histogram",inline = T)
                                                                ),
                                                                div(align = "center",uiOutput("message_autocorrelation")),
                                                                withSpinner(plotlyOutput("variable_boxplot", height = "100%", width = "100%")))
@@ -756,11 +760,11 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
     output$message_autocorrelation <- renderUI({
       
       points_serie <-eval(parse(text = paste0("data[,",colnames(data)[input$variables_class_input_rows_selected],"]"))) 
-      if (input$input_var_graph_type == "Autocorrelation" & !is.numeric(points_serie)){
+      if (input$input_var_graph_type %in% c("Histogram","Autocorrelation") & !is.numeric(points_serie)){
         argonH1("Only available for numerical variables",display = 4)
       }
     })
-
+    
     # Make glm parameters correspond to cursors and radiobuttons choices when user click on "Run generalized linear regression" button 
     observeEvent(input$run_glm,{
       
@@ -929,21 +933,29 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
       
       column_name <- colnames(data)[input$variables_class_input_rows_selected]
       points_serie <-eval(parse(text = paste0("data[,",column_name,"]"))) 
-        
+      
       if (input$input_var_graph_type == "Histogram"){
-        plot_ly(x = points_serie,type = "histogram",name = column_name)
-        }
+        req(is.numeric(points_serie))
+        ggplotly(
+          ggplot(data = data,aes(x = eval(parse(text = column_name)),fill = column_name))+
+            xlab(column_name)+
+            geom_histogram(aes(y=..density..), colour="black", fill="#FCADB3",bins = 30)+
+            geom_density(alpha = 0.4,size = 1.3) +
+            scale_fill_manual(values="#56B4E9")+
+            theme_bw(),tooltip = "density"
+        ) %>% hide_legend()
+      }
       else if (input$input_var_graph_type == "Boxplot"){
         plot_ly(x = points_serie,type = "box",name = column_name)
-        }
+      }
       else if (input$input_var_graph_type == "Autocorrelation"){
         req(is.numeric(points_serie))
         acf_object <- acf(points_serie,lag.max = 100)
         data_acf <- cbind(acf_object$lag,acf_object$acf) %>% as.data.table() %>% setnames(c("Lag","ACF"))
         plot_ly(x = data_acf$Lag, y = data_acf$ACF, type = "bar")
-
-        }
-
+        
+      }
+      
     })
     
     # Define plotly chart to explore dependencies between variables 
@@ -994,7 +1006,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
       
       if (input$checkbox_time_series == TRUE){
         req(!is.null(input$time_serie_select_column))
-        data_output_curve <- eval(parse(text = paste0("table_forecast()[['results']][,.(",input$time_serie_select_column,",",y,")]")))
+        data_output_curve <- table_forecast()[['results']] %>% select(-input$input_variables)
         
       }
       
@@ -1269,6 +1281,11 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
         
       })
       
+      # Define data train when time series option is not selected
+      data_train_not_time_serie <- reactive({
+        data %>% sample_frac(as.numeric(as.character(gsub("%","",input$percentage_selector)))*0.01)
+      })
+      
       # Define a list of object related to model results (specific for H2O framework)
       table_forecast <- reactive({
         
@@ -1289,7 +1306,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
           
           req(!is.null(input$percentage_selector))
           
-          data_train <- data %>% sample_frac(as.numeric(as.character(gsub("%","",input$percentage_selector)))*0.01)
+          data_train <- data_train_not_time_serie()
           data_test <- data %>% anti_join(data_train,by = colnames(data))
           data_results <- data_test
           
@@ -1310,12 +1327,17 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
         if (length(var_input_list) != 0){
           
           if (input$checkbox_time_series == TRUE){
-            data_h2o_train <- as.h2o(eval(parse(text = paste0("data[",input$time_serie_select_column,"<='",test_1$date,"',][",input$time_serie_select_column,">='",train_1$date,"',]"))))
-            data_h2o_test <- as.h2o(eval(parse(text = paste0("data[",input$time_serie_select_column,">'",test_1$date,"',][",input$time_serie_select_column,"< '",test_2$date,"',]"))))
-            
+            data_h2o_train <- as.h2o(eval(parse(text = paste0("data[",input$time_serie_select_column,"<='",test_1$date,"',][",input$time_serie_select_column,">='",train_1$date,"',][, !'",input$time_serie_select_column,"']"))))
+            data_h2o_test <- as.h2o(eval(parse(text = paste0("data[",input$time_serie_select_column,">'",test_1$date,"',][",input$time_serie_select_column,"< '",test_2$date,"',][, !'",input$time_serie_select_column,"']"))))
           }
           
           else if (input$checkbox_time_series == FALSE){
+            
+            if (length(dates_variable_list()) >= 1){
+              data_train <- eval(parse(text = paste0("data_train[, !'",dates_variable_list()[1] ,"']")))
+              data_test <- eval(parse(text = paste0("data_test[, !'",dates_variable_list()[1],"']")))
+            } 
+            
             data_h2o_train <- as.h2o(data_train)
             data_h2o_test <- as.h2o(data_test)
           }
@@ -1334,7 +1356,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                            lambda = parameter$reg_param_glm,
                            alpha = parameter$alpha_param_glm,
                            max_iterations = parameter$max_iter_glm,
-                           seed = 1
+                           seed = 123
             )
             t2 <- Sys.time()
             time_glm <- data.frame(`Training time` =  paste0(round(t2 - t1,1)," seconds"), Model = "Generalized linear regression")
@@ -1356,7 +1378,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                                     sample_rate = parameter$subsampling_rate_random_forest,
                                     max_depth = parameter$max_depth_random_forest,
                                     nbins = parameter$n_bins_random_forest,
-                                    seed = 1
+                                    seed = 123
             )
             t2 <- Sys.time()
             time_random_forest <- data.frame(`Training time` =  paste0(round(t2 - t1,1)," seconds"), Model = "Random forest")
@@ -1379,7 +1401,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                                     epochs = parameter$epochs_neural_net,
                                     rate = parameter$rate_neural_net,
                                     reproducible = T,
-                                    seed = 1
+                                    seed = 123
             )
             t2 <- Sys.time()
             
@@ -1402,7 +1424,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                            max_depth = parameter$max_depth_gbm,
                            learn_rate = parameter$learn_rate_gbm,
                            min_rows = 2,
-                           seed = 1
+                           seed = 123
             )
             t2 <- Sys.time()
             time_gbm <- data.frame(`Training time` =  paste0(round(t2 - t1,1)," seconds"), Model = "Gradient boosted trees")
@@ -1424,7 +1446,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
                                      y = y,
                                      training_frame = data_h2o_train,
                                      max_runtime_secs = parameter$run_time_auto_ml,
-                                     seed = 1
+                                     seed = 123
                                      
             )
             
@@ -1540,6 +1562,11 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
         
       })
       
+      # Define data train when time series option is not selected
+      data_train_not_time_serie <- reactive({
+        data %>% sample_frac(as.numeric(as.character(gsub("%","",input$percentage_selector)))*0.01)
+      })
+      
       # Define a list of object related to model results (specific for Spark framework)
       table_forecast <- reactive({
         
@@ -1549,6 +1576,8 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
         if (input$checkbox_time_series == TRUE){
           req(!is.null(test_1$date))
           req(!is.null(test_2$date))
+          data_train <- data.table()
+          data_test <- data.table()
           
           data_results <- eval(parse(text = paste0("data[",input$time_serie_select_column,">'",test_1$date,"',][",input$time_serie_select_column,"< '",test_2$date,"',]")))
           
@@ -1558,7 +1587,7 @@ shinyML_regression <- function(data = data,y,framework = "h2o", share_app = FALS
           
           req(!is.null(input$percentage_selector))
           
-          data_train <- data %>% sample_frac(as.numeric(as.character(gsub("%","",input$percentage_selector)))*0.01)
+          data_train <- data_train_not_time_serie()
           data_test <- data %>% anti_join(data_train, by = colnames(data))
           data_results <- data_test
           
